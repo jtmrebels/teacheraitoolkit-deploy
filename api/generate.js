@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-  // Only allow POST
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method Not Allowed" });
@@ -8,7 +7,7 @@ export default async function handler(req, res) {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: "Server misconfigured: missing OPENAI_API_KEY" });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
     const { model, system, prompt } = req.body || {};
@@ -17,11 +16,6 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing or invalid 'prompt'." });
     }
 
-    // Basic guardrails (keeps costs predictable)
-    const safeModel = (typeof model === "string" && model.length <= 60) ? model : "gpt-4.1-mini";
-    const safeSystem = (typeof system === "string" && system.length <= 4000) ? system : "";
-    const safePrompt = prompt.slice(0, 20000); // cap input length
-
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -29,15 +23,15 @@ export default async function handler(req, res) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: safeModel,
+        model: model || "gpt-4.1-mini",
         input: [
           {
             role: "system",
-            content: [{ type: "input_text", text: safeSystem }]
+            content: [{ type: "input_text", text: system || "" }]
           },
           {
             role: "user",
-            content: [{ type: "input_text", text: safePrompt }]
+            content: [{ type: "input_text", text: prompt }]
           }
         ],
         max_output_tokens: 900
@@ -53,14 +47,30 @@ export default async function handler(req, res) {
       });
     }
 
-    // Responses API provides a convenient aggregated field: output_text (when available)
-    const text = (data && typeof data.output_text === "string") ? data.output_text : "";
-
-    if (!text) {
-      return res.status(200).json({ text: "" });
+    // Prefer output_text if present
+    if (typeof data.output_text === "string" && data.output_text.trim().length > 0) {
+      return res.status(200).json({ text: data.output_text });
     }
 
-    return res.status(200).json({ text });
+    // Fallback: extract from output array
+    if (Array.isArray(data.output)) {
+      let combined = "";
+
+      for (const item of data.output) {
+        if (Array.isArray(item.content)) {
+          for (const content of item.content) {
+            if (content.text) {
+              combined += content.text + "\n";
+            }
+          }
+        }
+      }
+
+      return res.status(200).json({ text: combined.trim() });
+    }
+
+    return res.status(200).json({ text: "" });
+
   } catch (err) {
     return res.status(500).json({ error: "Server error", details: String(err) });
   }
