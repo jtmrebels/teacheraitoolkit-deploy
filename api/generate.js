@@ -5,6 +5,15 @@ export default async function handler(req, res) {
   }
 
   try {
+    // ✅ Token gate (prevents public abuse of your endpoint)
+    const requiredToken = process.env.APP_PROXY_TOKEN;
+    if (requiredToken) {
+      const provided = req.headers["x-app-token"];
+      if (!provided || provided !== requiredToken) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+    }
+
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
@@ -15,12 +24,12 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing or invalid 'prompt'." });
     }
 
-    // Keep requests predictable
+    // Guardrails
     const safeModel = (typeof model === "string" && model.length <= 60) ? model : "gpt-4.1-mini";
     const safeSystem = (typeof system === "string" && system.length <= 4000) ? system : "";
     const safePrompt = prompt.slice(0, 20000);
 
-    // Add a small formatting instruction to avoid LaTeX escapes in teacher-facing output
+    // Teacher-friendly formatting (avoid LaTeX-looking escapes)
     const formattingNote =
       "\n\nFormatting requirements:\n" +
       "- Use plain text math (e.g., 3/4) unless the user explicitly asks for LaTeX.\n" +
@@ -60,7 +69,7 @@ export default async function handler(req, res) {
     // Prefer output_text if available
     let text = (typeof data.output_text === "string") ? data.output_text : "";
 
-    // Fallback: extract any content.text entries
+    // Fallback extraction
     if (!text && Array.isArray(data.output)) {
       let combined = "";
       for (const item of data.output) {
@@ -73,7 +82,7 @@ export default async function handler(req, res) {
       text = combined.trim();
     }
 
-    // Last cleanup pass: remove common LaTeX wrappers if they still appear
+    // Cleanup common LaTeX wrappers if they still appear
     if (text) {
       text = text
         .replace(/\\\(/g, "")
