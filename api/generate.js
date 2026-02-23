@@ -11,10 +11,20 @@ export default async function handler(req, res) {
     }
 
     const { model, system, prompt } = req.body || {};
-
     if (!prompt || typeof prompt !== "string") {
       return res.status(400).json({ error: "Missing or invalid 'prompt'." });
     }
+
+    // Keep requests predictable
+    const safeModel = (typeof model === "string" && model.length <= 60) ? model : "gpt-4.1-mini";
+    const safeSystem = (typeof system === "string" && system.length <= 4000) ? system : "";
+    const safePrompt = prompt.slice(0, 20000);
+
+    // Add a small formatting instruction to avoid LaTeX escapes in teacher-facing output
+    const formattingNote =
+      "\n\nFormatting requirements:\n" +
+      "- Use plain text math (e.g., 3/4) unless the user explicitly asks for LaTeX.\n" +
+      "- Keep output classroom-ready and easy to copy/paste.\n";
 
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -23,15 +33,15 @@ export default async function handler(req, res) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: model || "gpt-4.1-mini",
+        model: safeModel,
         input: [
           {
             role: "system",
-            content: [{ type: "input_text", text: system || "" }]
+            content: [{ type: "input_text", text: safeSystem + formattingNote }]
           },
           {
             role: "user",
-            content: [{ type: "input_text", text: prompt }]
+            content: [{ type: "input_text", text: safePrompt }]
           }
         ],
         max_output_tokens: 900
@@ -47,29 +57,33 @@ export default async function handler(req, res) {
       });
     }
 
-    // Prefer output_text if present
-    if (typeof data.output_text === "string" && data.output_text.trim().length > 0) {
-      return res.status(200).json({ text: data.output_text });
-    }
+    // Prefer output_text if available
+    let text = (typeof data.output_text === "string") ? data.output_text : "";
 
-    // Fallback: extract from output array
-    if (Array.isArray(data.output)) {
+    // Fallback: extract any content.text entries
+    if (!text && Array.isArray(data.output)) {
       let combined = "";
-
       for (const item of data.output) {
         if (Array.isArray(item.content)) {
-          for (const content of item.content) {
-            if (content.text) {
-              combined += content.text + "\n";
-            }
+          for (const c of item.content) {
+            if (typeof c.text === "string") combined += c.text + "\n";
           }
         }
       }
-
-      return res.status(200).json({ text: combined.trim() });
+      text = combined.trim();
     }
 
-    return res.status(200).json({ text: "" });
+    // Last cleanup pass: remove common LaTeX wrappers if they still appear
+    if (text) {
+      text = text
+        .replace(/\\\(/g, "")
+        .replace(/\\\)/g, "")
+        .replace(/\\\[/g, "")
+        .replace(/\\\]/g, "")
+        .replace(/\\\\/g, "\\");
+    }
+
+    return res.status(200).json({ text: text || "" });
 
   } catch (err) {
     return res.status(500).json({ error: "Server error", details: String(err) });
